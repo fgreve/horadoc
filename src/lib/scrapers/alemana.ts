@@ -34,6 +34,7 @@ export class AlemanaScraper extends ClinicScraper {
   readonly clinicId: "alemana" | "santa_maria" = "alemana";
   protected readonly empresa: string = "1";
   protected readonly baseUrl = "https://reserva.alemana.cl";
+  private sessionInitialized = false;
 
   protected readonly sucursales: Record<string, string> = {
     "1": "Vitacura",
@@ -48,23 +49,28 @@ export class AlemanaScraper extends ClinicScraper {
   private cookies: string | null = null;
 
   private async initSession(): Promise<boolean> {
+    if (this.sessionInitialized && this.csrfToken) return true;
     try {
       const response = await this.fetchWithRetry(
         `${this.baseUrl}/reserva/portal/busqueda?empresa=${this.empresa}`
       );
       const html = await response.text();
 
-      const csrfMatch = html.match(/csrfToken['"]\s*:\s*['"]([^'"]+)['"]/);
+      const csrfMatch = html.match(/csrfToken.*?:\s*["']([^"']+)["']/);
       if (csrfMatch) {
         this.csrfToken = csrfMatch[1];
       }
 
       const setCookie = response.headers.get("set-cookie");
       if (setCookie) {
-        this.cookies = setCookie;
+        this.cookies = setCookie
+          .split(",")
+          .map((c) => c.split(";")[0])
+          .join("; ");
       }
 
-      return !!this.csrfToken;
+      this.sessionInitialized = !!this.csrfToken;
+      return this.sessionInitialized;
     } catch {
       return false;
     }
@@ -112,15 +118,39 @@ export class AlemanaScraper extends ClinicScraper {
     if (!html) return [];
 
     const specialties: RawSpecialty[] = [];
-    const optionRegex =
-      /<option[^>]*value="(\d+)"[^>]*>([^<]+)<\/option>/g;
-    let optMatch;
-    while ((optMatch = optionRegex.exec(html)) !== null) {
-      if (optMatch[1] !== "0") {
-        specialties.push({
-          externalId: optMatch[1],
-          name: optMatch[2].trim(),
-        });
+
+    // Try el-option (Element UI) format first
+    const elOptionRegex = /value[=:]\s*["'](\d+)["'][^>]*label[=:]\s*["']([^"']+)["']/g;
+    let m;
+    while ((m = elOptionRegex.exec(html)) !== null) {
+      if (m[1] !== "0") {
+        specialties.push({ externalId: m[1], name: m[2].trim() });
+      }
+    }
+
+    // Fallback to standard option tags
+    if (specialties.length === 0) {
+      const optionRegex = /<option[^>]*value="(\d+)"[^>]*>([^<]+)<\/option>/g;
+      while ((m = optionRegex.exec(html)) !== null) {
+        if (m[1] !== "0") {
+          specialties.push({ externalId: m[1], name: m[2].trim() });
+        }
+      }
+    }
+
+    // Fallback: extract from areas_medicas JS data
+    if (specialties.length === 0) {
+      const areasMatch = html.match(/areas_medicas\s*[=:]\s*(\[[\s\S]*?\])\s*[,;}\n]/);
+      if (areasMatch) {
+        try {
+          const areas = JSON.parse(areasMatch[1]);
+          for (const area of areas) {
+            specialties.push({
+              externalId: String(area.codigo || area.id || area.indice),
+              name: area.nombre || area.descripcion || "",
+            });
+          }
+        } catch { /* ignore parse errors */ }
       }
     }
 
@@ -128,7 +158,7 @@ export class AlemanaScraper extends ClinicScraper {
   }
 
   async scrapeDoctors(specialtyId: string): Promise<RawDoctor[]> {
-    if (!this.csrfToken) await this.initSession();
+    await this.initSession();
 
     const today = this.formatDate(new Date());
     const html = await this.fetchPage(
@@ -139,19 +169,21 @@ export class AlemanaScraper extends ClinicScraper {
     const params = this.parseParametrosBack(html);
     if (!params || !Array.isArray(params.profesionales)) return [];
 
-    return (params.profesionales as AlemanaProfessional[]).map((p) => ({
-      externalId: String(p.indice),
-      name: p.nombre_apellido || `${p.apellido_primero} ${p.apellido_segundo}, ${p.nombres}`,
-      specialtyRaw: "",
-      sede: p.primera_hora?.[0]?.sucursal?.nombre,
-    }));
+    return (params.profesionales as AlemanaProfessional[])
+      .slice(0, 50)
+      .map((p) => ({
+        externalId: String(p.indice),
+        name: p.nombre_apellido || `${p.nombres} ${p.apellido_primero} ${p.apellido_segundo}`.trim(),
+        specialtyRaw: "",
+        sede: p.primera_hora?.[0]?.sucursal?.nombre,
+      }));
   }
 
   async scrapeSlots(
     doctorId: string,
     dateRange: DateRange
   ): Promise<RawSlot[]> {
-    if (!this.csrfToken) await this.initSession();
+    await this.initSession();
 
     const slots: RawSlot[] = [];
     const current = new Date(dateRange.from);
@@ -169,10 +201,8 @@ export class AlemanaScraper extends ClinicScraper {
         if (this.cookies) headers["Cookie"] = this.cookies;
         if (this.csrfToken) headers["X-CSRF-TOKEN"] = this.csrfToken;
 
-        const response = await this.fetchWithRetry(
-          `${this.baseUrl}/reserva/portal/disponibilidad/dia/profesional?empresa=${this.empresa}&profesional=${doctorId}&tipo_busqueda=1&area_medica=0&area_interes=0&ubicacion=99&tipo_di=&di=&super_centro=&centro=&horario=A&idioma=&fecha=${dateStr}&dia=${day}&sobrecupo=false`,
-          { headers }
-        );
+        const url = `${this.baseUrl}/reserva/portal/disponibilidad/dia/profesional?empresa=${this.empresa}&profesional=${doctorId}&tipo_busqueda=1&area_medica=0&area_interes=0&ubicacion=99&tipo_di=&di=&super_centro=&centro=&horario=A&idioma=&fecha=${dateStr}&dia=${day}&sobrecupo=false`;
+        const response = await this.fetchWithRetry(url, { headers });
 
         const data = (await response.json()) as AlemanaSlotResponse[];
         if (Array.isArray(data)) {
