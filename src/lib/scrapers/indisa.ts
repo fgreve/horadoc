@@ -6,76 +6,62 @@ import {
   RawSpecialty,
 } from "./base";
 
+/**
+ * INDISA uses the Eniax third-party booking widget (agendaweb.indisa.cl).
+ * The Eniax widget requires reCAPTCHA to establish a session, making direct
+ * API scraping impractical without a browser automation layer.
+ * For MVP, this scraper returns fallback specialties and empty slot data.
+ */
+
+interface EniaxInsurance {
+  id: string;
+  name: string;
+}
+
 export class IndisaScraper extends ClinicScraper {
   readonly clinicId = "indisa" as const;
-  private readonly baseUrl = "https://www.indisa.cl";
+  private readonly widgetBase = "https://agendaweb.indisa.cl";
 
   async scrapeSpecialties(): Promise<RawSpecialty[]> {
     try {
       const response = await this.fetchWithRetry(
-        `${this.baseUrl}/api/especialidades`
+        `${this.widgetBase}/api/v1/medical-insurances`,
+        { headers: { Accept: "application/json" } }
       );
-      const data = await response.json();
-      return (data as Array<{ id: string; nombre: string }>).map((s) => ({
-        externalId: s.id,
-        name: s.nombre,
+      const data = (await response.json()) as EniaxInsurance[];
+      if (!Array.isArray(data)) return this.getFallbackSpecialties();
+      return data.map((item) => ({
+        externalId: item.id,
+        name: item.name,
       }));
     } catch {
-      return [];
+      return this.getFallbackSpecialties();
     }
   }
 
-  async scrapeDoctors(specialtyId: string): Promise<RawDoctor[]> {
-    try {
-      const response = await this.fetchWithRetry(
-        `${this.baseUrl}/api/profesionales?especialidad=${specialtyId}`
-      );
-      const data = await response.json();
-      return (
-        data as Array<{
-          id: string;
-          nombre: string;
-          especialidad: string;
-          sede: string;
-        }>
-      ).map((d) => ({
-        externalId: d.id,
-        name: d.nombre,
-        specialtyRaw: d.especialidad,
-        sede: d.sede,
-      }));
-    } catch {
-      return [];
-    }
+  async scrapeDoctors(_specialtyId: string): Promise<RawDoctor[]> {
+    return [];
   }
 
-  async scrapeSlots(doctorId: string, dateRange: DateRange): Promise<RawSlot[]> {
-    try {
-      const from = dateRange.from.toISOString().split("T")[0];
-      const to = dateRange.to.toISOString().split("T")[0];
-      const response = await this.fetchWithRetry(
-        `${this.baseUrl}/api/horas-disponibles?profesional=${doctorId}&desde=${from}&hasta=${to}`
-      );
-      const data = await response.json();
-      return (
-        data as Array<{
-          fecha: string;
-          hora_inicio: string;
-          hora_fin: string;
-          sede: string;
-          telemedicina: boolean;
-        }>
-      ).map((s) => ({
-        doctorExternalId: doctorId,
-        date: s.fecha,
-        startTime: s.hora_inicio,
-        endTime: s.hora_fin,
-        sede: s.sede,
-        isTelemedicine: s.telemedicina,
-        rawData: s as unknown as Record<string, unknown>,
-      }));
-    } catch {
-      return [];
-    }
+  async scrapeSlots(
+    _doctorId: string,
+    _dateRange: DateRange
+  ): Promise<RawSlot[]> {
+    return [];
+  }
+
+  private getFallbackSpecialties(): RawSpecialty[] {
+    return [
+      { externalId: "consulta-medica", name: "Consulta Médica" },
+      { externalId: "pediatria", name: "Pediatría" },
+      { externalId: "ginecologia", name: "Ginecología" },
+      { externalId: "oftalmologia", name: "Oftalmología" },
+      { externalId: "dermatologia", name: "Dermatología" },
+      { externalId: "traumatologia", name: "Traumatología" },
+      { externalId: "cardiologia", name: "Cardiología" },
+      { externalId: "neurologia", name: "Neurología" },
+      { externalId: "urologia", name: "Urología" },
+      { externalId: "otorrino", name: "Otorrinolaringología" },
+    ];
   }
 }

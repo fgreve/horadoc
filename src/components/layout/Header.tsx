@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { HeartPulse, Search, Menu, X, User, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { createClient } from "@/lib/supabase/client";
 
 interface HeaderProps {
   user: { email: string; full_name?: string } | null;
@@ -12,6 +14,15 @@ interface HeaderProps {
 function Header({ user }: HeaderProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const router = useRouter();
+  const supabase = createClient();
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setDropdownOpen(false);
+    router.push("/");
+    router.refresh();
+  };
 
   return (
     <header className="sticky top-0 z-50 border-b border-[#e7e5e4] bg-white/95 backdrop-blur-sm">
@@ -66,14 +77,13 @@ function Header({ user }: HeaderProps) {
                     <User className="h-4 w-4" />
                     Mi perfil
                   </Link>
-                  <Link
-                    href="/logout"
-                    className="flex items-center gap-2 px-4 py-2 text-sm text-[#ef4444] hover:bg-[#f5f5f4]"
-                    onClick={() => setDropdownOpen(false)}
+                  <button
+                    onClick={handleSignOut}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-sm text-[#ef4444] hover:bg-[#f5f5f4]"
                   >
                     <LogOut className="h-4 w-4" />
-                    Cerrar sesión
-                  </Link>
+                    Salir
+                  </button>
                 </div>
               )}
             </div>
